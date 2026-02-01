@@ -1,0 +1,58 @@
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build / output
+dist/
+build/
+coverage/
+
+# ===== Environment files (DO NOT COMMIT) =====
+.env
+.env.*
+!.env.example
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# ===== Logs =====
+logs/
+*.log
+
+# ===== Docker =====
+*.pid
+docker-compose.override.yml
+
+# ===== Kubernetes / Helm (optional local files) =====
+*.kubeconfig
+kubeconfig
+kubeconfig.b64
+
+# ===== Terraform (if you add infra later) =====
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ===== GitHub Actions artifacts / temp =====
+*.pem
+*.key
+*.crt
+*.sig
+*.zip
+
+# ===== Misc =====
+*.tmp
+*.bak
