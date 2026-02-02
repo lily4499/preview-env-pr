@@ -1,0 +1,95 @@
+name: PR Preview Environment
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      NS: pr-${{ github.event.pull_request.number }}
+      REGISTRY: ${{ secrets.REGISTRY }}
+      IMAGE_NAME: ${{ secrets.IMAGE_NAME }}
+      PREVIEW_BASE_DOMAIN: ${{ secrets.PREVIEW_BASE_DOMAIN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        run: echo "TAG=pr-${PR_NUMBER}-${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build & push
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+
+      - name: Create namespace
+        run: |
+          kubectl get ns "$NS" || kubectl create ns "$NS"
+
+      - name: Deploy manifests
+        run: |
+          HOST="pr-${PR_NUMBER}.${PREVIEW_BASE_DOMAIN}"
+
+          sed -e "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
+              -e "s|PR_NUMBER_PLACEHOLDER|${PR_NUMBER}|g" \
+              -e "s|APP_VERSION_PLACEHOLDER|${TAG}|g" \
+              k8s/deployment.yaml | kubectl -n "$NS" apply -f -
+
+          kubectl -n "$NS" apply -f k8s/service.yaml
+
+          sed -e "s|HOST_PLACEHOLDER|${HOST}|g" \
+              k8s/ingress.yaml | kubectl -n "$NS" apply -f -
+
+          echo "PREVIEW_URL=https://${HOST}" >> $GITHUB_ENV
+
+      - name: Wait for rollout
+        run: kubectl -n "$NS" rollout status deploy/app --timeout=180s
+
+      - name: Comment preview link on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = process.env.PREVIEW_URL;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ Preview environment ready: ${url}\n\nNamespace: \`${process.env.NS}\``
+            });
+
+  cleanup:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      NS: pr-${{ github.event.pull_request.number }}
+    steps:
+      - name: Setup kubeconfig
+        run: |
+          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+
+      - name: Delete namespace
+        run: |
+          kubectl delete ns "$NS" --ignore-not-found=true
