@@ -12,20 +12,52 @@ jobs:
   deploy:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       NS: pr-${{ github.event.pull_request.number }}
-      REGISTRY: ${{ secrets.REGISTRY }}
-      IMAGE_NAME: ${{ secrets.IMAGE_NAME }}
-      PREVIEW_BASE_DOMAIN: ${{ secrets.PREVIEW_BASE_DOMAIN }}
+
+      # Non-sensitive -> Variables (recommended)
+      REGISTRY: ${{ vars.REGISTRY }}
+      IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+      PREVIEW_BASE_DOMAIN: ${{ vars.PREVIEW_BASE_DOMAIN }}
+
+      # From Secrets
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set image tag
-        run: echo "TAG=pr-${PR_NUMBER}-${GITHUB_SHA::7}" >> $GITHUB_ENV
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          TAG="pr-${PR_NUMBER}-${SHA}"
+          echo "TAG=$TAG" >> $GITHUB_ENV
 
-      - name: Login to registry
+      # ✅ Static AWS credentials (simpler than OIDC)
+      - name: Configure AWS credentials (static)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify AWS identity (debug)
+        run: aws sts get-caller-identity
+
+      # ✅ Generate kubeconfig on the runner (best practice)
+      - name: Setup kubeconfig (EKS)
+        run: |
+          aws eks update-kubeconfig \
+            --name "${EKS_CLUSTER_NAME}" \
+            --region "${AWS_REGION}"
+
+          kubectl get nodes
+          kubectl get ns
+
+      - name: Login to registry (DockerHub)
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.REGISTRY_USERNAME }}
@@ -33,62 +65,87 @@ jobs:
 
       - name: Build & push
         run: |
-          IMAGE="${REGISTRY}/${IMAGE_NAME}:${TAG}"
+          # Clean to avoid invalid reference format
+          REGISTRY_CLEAN="${REGISTRY%/}"
+          IMAGE_CLEAN="${IMAGE_NAME#/}"
+
+          IMAGE="${REGISTRY_CLEAN}/${IMAGE_CLEAN}:${TAG}"
+          echo "Final image: $IMAGE"
+
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
-      - name: Setup kubeconfig
-        run: |
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > kubeconfig
-          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
 
       - name: Create namespace
         run: |
-          kubectl get ns "$NS" || kubectl create ns "$NS"
+          kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create ns "$NS"
+          kubectl get ns "$NS"
 
       - name: Deploy manifests
         run: |
           HOST="pr-${PR_NUMBER}.${PREVIEW_BASE_DOMAIN}"
 
+          # Deployment (replace placeholders)
           sed -e "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
               -e "s|PR_NUMBER_PLACEHOLDER|${PR_NUMBER}|g" \
               -e "s|APP_VERSION_PLACEHOLDER|${TAG}|g" \
               k8s/deployment.yaml | kubectl -n "$NS" apply -f -
 
+          # Service
           kubectl -n "$NS" apply -f k8s/service.yaml
 
+          # Ingress (replace host)
           sed -e "s|HOST_PLACEHOLDER|${HOST}|g" \
               k8s/ingress.yaml | kubectl -n "$NS" apply -f -
 
           echo "PREVIEW_URL=https://${HOST}" >> $GITHUB_ENV
+          echo "HOST=${HOST}" >> $GITHUB_ENV
 
       - name: Wait for rollout
-        run: kubectl -n "$NS" rollout status deploy/app --timeout=180s
+        run: |
+          kubectl -n "$NS" rollout status deploy/app --timeout=300s
+          kubectl -n "$NS" get pods -o wide
+          kubectl -n "$NS" get ingress
 
       - name: Comment preview link on PR
         uses: actions/github-script@v7
         with:
           script: |
             const url = process.env.PREVIEW_URL;
-            github.rest.issues.createComment({
+            const ns = process.env.NS;
+
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `✅ Preview environment ready: ${url}\n\nNamespace: \`${process.env.NS}\``
+              body: `✅ Preview environment ready: ${url}\n\nNamespace: \`${ns}\``
             });
 
   cleanup:
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
+
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       NS: pr-${{ github.event.pull_request.number }}
+
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
     steps:
-      - name: Setup kubeconfig
+      - name: Configure AWS credentials (static)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup kubeconfig (EKS)
         run: |
-          echo "${{ secrets.KUBECONFIG_B64 }}" | base64 -d > kubeconfig
-          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+          aws eks update-kubeconfig \
+            --name "${EKS_CLUSTER_NAME}" \
+            --region "${AWS_REGION}"
 
       - name: Delete namespace
         run: |
