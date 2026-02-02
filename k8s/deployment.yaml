@@ -19,8 +19,47 @@ spec:
               value: "PR_NUMBER_PLACEHOLDER"
             - name: APP_VERSION
               value: "APP_VERSION_PLACEHOLDER"
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
           readinessProbe:
             httpGet: { path: /health, port: 3000 }
             initialDelaySeconds: 5
             periodSeconds: 5
+
+
+
+
+
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: app
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels: { app: app }
+#   template:
+#     metadata:
+#       labels: { app: app }
+#     spec:
+#       containers:
+#         - name: app
+#           image: IMAGE_PLACEHOLDER
+#           ports: [{ containerPort: 3000 }]
+#           env:
+#             - name: PR_NUMBER
+#               value: "PR_NUMBER_PLACEHOLDER"
+#             - name: APP_VERSION
+#               value: "APP_VERSION_PLACEHOLDER"
+#           readinessProbe:
+#             httpGet: { path: /health, port: 3000 }
+#             initialDelaySeconds: 5
+#             periodSeconds: 5
 
