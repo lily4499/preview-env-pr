@@ -4,7 +4,7 @@ metadata:
   name: app
 spec:
   rules:
-    - host: pr-1.preview.lilianebooks.online
+    - host: HOST_PLACEHOLDER
       http:
         paths:
           - path: /
